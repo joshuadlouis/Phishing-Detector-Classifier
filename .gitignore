@@ -1,0 +1,11 @@
+# Hugging Face Model Artifacts
+intent_model/
+results/
+logs/
+
+# Datasets
+rokibulroni_phishing_dataset/
+
+# Python defaults
+__pycache__/
+*.pyc
