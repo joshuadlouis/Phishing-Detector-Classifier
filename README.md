@@ -1,8 +1,8 @@
-# Phishing Intent Classifier
+# Phishing Detector 
 
 ## Overview
 
-The **Phishing Intent Classifier** is an NLP pipeline designed to categorize malicious emails and texts based on the psychological manipulation tactic they employ.
+The **Phishing Detector** is an NLP pipeline designed to categorize malicious emails and texts based on the psychological manipulation tactic they employ.
 
 Rather than a binary spam filter ("Safe or Phishing?"), this system identifies the underlying behavioral vector of an attack by mapping each communication to one of **Cialdini's 6 Principles of Persuasion**. The goal is to produce actionable threat intelligence — distinguishing, for example, a targeted authority-based spear-phishing attempt from broad urgency-driven spam.
 
