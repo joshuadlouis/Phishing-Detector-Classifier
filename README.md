@@ -179,7 +179,7 @@ The verdict system operates on a **three-tier confidence threshold** (60%):
 
 ## Model Artifact
 
-The trained model is hosted on HuggingFace Hub. To use it locally, download and place it in `./intent_model/`:
+The trained model will be hosted on HuggingFace Hub. Here is the architecture it will follow inside `./intent_model/`:
 
 ```python
 from huggingface_hub import snapshot_download
