@@ -15,15 +15,15 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 import numpy as np
 
-# Intent Labels (Combining base intents with Cialdini's 6 Principles)
+# Intent Labels (Cialdini's 6 Principles minus 'Liking', which acted as a catch-all)
 INTENT_LABELS = [
-    "Urgency and Scarcity", 
-    "Authority", 
-    "Fear", 
-    "Greed and Reciprocity", 
-    "Commitment and Consistency", 
-    "Consensus and Social Proof", 
-    "Liking"
+    "Urgency and Scarcity",
+    "Authority",
+    "Fear",
+    "Greed and Reciprocity",
+    "Commitment and Consistency",
+    "Consensus and Social Proof",
+    "Safe / Neutral"
 ]
 
 def clean_text(text):
@@ -112,37 +112,159 @@ def ingest_and_preprocess_data(data_path):
     
     return main_df
 
+def _get_classifier_device():
+    """Returns the best available device for the zero-shot pipeline."""
+    if torch.cuda.is_available():
+        return 0
+    try:
+        import torch_directml
+        if torch_directml.is_available():
+            dml = torch_directml.device()
+            print(f"DirectML active! Using Radeon Graphics: {torch_directml.device_name(dml.index)}")
+            return dml
+    except ImportError:
+        pass
+    return -1
+
+
+def _run_zero_shot_batch(classifier, texts, resume_index=0, checkpoint_path=None):
+    """Runs zero-shot classification in batches with checkpoint support."""
+    from tqdm import tqdm
+
+    batch_size = 16
+    intent_labels = []
+    print(f"Running zero-shot on {len(texts) - resume_index} items...")
+
+    for i in tqdm(range(resume_index, len(texts), batch_size), desc="Zero-Shot Labeling"):
+        batch_texts = texts[i : i + batch_size]
+        valid_batch = [t if t.strip() else "Neutral" for t in batch_texts]
+
+        results = classifier(valid_batch, candidate_labels=INTENT_LABELS, batch_size=batch_size)
+        if isinstance(results, dict):
+            results = [results]
+
+        for res in results:
+            intent_labels.append(res['labels'][0])
+
+        # Checkpoint every ~100 items
+        if checkpoint_path and len(intent_labels) % 100 == 0:
+            pd.DataFrame({'intent': intent_labels}).to_csv(checkpoint_path, index=False)
+
+    return intent_labels
+
+
 def label_phishing_intents(df, sample_limit=None):
     """
-    Uses Zero-Shot classification to assign Intent labels to Phishing text.
+    Uses Zero-Shot classification to assign Intent labels to phishing text.
+    - Caches results to 'labeled_dataset_cache.csv'.
+    - If the cache exists but contains stale 'Liking' rows (removed label),
+      only those rows are re-classified — saving significant compute time.
     """
-    print("Loading Zero-Shot Classifier (facebook/bart-large-mnli)...")
-    device = 0 if torch.cuda.is_available() else -1
-    classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli", device=device)
-    
-    # Filter for phishing emails (assuming '1' or 'phishing' denotes phishing)
-    phishing_df = df[df['label'].astype(str).isin(['1', 'phishing', 'spam', 'fraud'])].copy()
-    
-    if len(phishing_df) == 0:
-        raise ValueError("No phishing examples found to label intents. Check label mapping.")
-        
+    cache_path = Path("labeled_dataset_cache.csv")
+    checkpoint_path = Path("labeled_dataset_checkpoint.csv")
+    STALE_LABEL = "Liking"
+
+    # ------------------------------------------------------------------ #
+    # SMART CACHE PATCH: re-label only stale rows, keep everything else   #
+    # ------------------------------------------------------------------ #
+    if cache_path.exists():
+        cached_df = pd.read_csv(cache_path)
+        stale_mask = cached_df['intent'] == STALE_LABEL
+        stale_count = stale_mask.sum()
+
+        if stale_count == 0:
+            print(f"\n--- [CACHE FOUND, NO STALE ROWS] ---")
+            print(f"Loaded {len(cached_df):,} rows from {cache_path}.")
+            return cached_df
+
+        print(f"\n--- [CACHE PATCH REQUIRED] ---")
+        print(f"Found {stale_count:,} rows labeled '{STALE_LABEL}' (removed label).")
+        print(f"Re-labeling these rows only — no need to re-process the full dataset.")
+
+        device = _get_classifier_device()
+        print("Loading Zero-Shot Classifier (valhalla/distilbart-mnli-12-3)...")
+        classifier = pipeline("zero-shot-classification", model="valhalla/distilbart-mnli-12-3", device=device)
+
+        stale_df = cached_df[stale_mask].copy()
+        texts = [str(t)[:800] for t in stale_df['text'].tolist()]
+
+        # Check for a partial checkpoint scoped to this patch run
+        resume_index = 0
+        patch_checkpoint = Path("patch_checkpoint.csv")
+        if patch_checkpoint.exists():
+            ckpt = pd.read_csv(patch_checkpoint)
+            resume_index = len(ckpt)
+            print(f"Resuming patch from index {resume_index}...")
+
+        new_labels = _run_zero_shot_batch(
+            classifier, texts,
+            resume_index=resume_index,
+            checkpoint_path=patch_checkpoint
+        )
+
+        # Combine with previously checkpointed labels if resuming
+        if resume_index > 0:
+            prev_labels = pd.read_csv(patch_checkpoint)['intent'].tolist()[:resume_index]
+            new_labels = prev_labels + new_labels
+
+        cached_df.loc[stale_mask, 'intent'] = new_labels
+        cached_df.to_csv(cache_path, index=False)
+        if patch_checkpoint.exists():
+            patch_checkpoint.unlink()
+
+        print(f"\nUpdated intent distribution:")
+        print(cached_df['intent'].value_counts())
+        return cached_df
+
+    # ------------------------------------------------------------------ #
+    # FULL LABELING RUN (no cache exists)                                  #
+    # ------------------------------------------------------------------ #
+    device = _get_classifier_device()
+    print("Loading Zero-Shot Classifier (valhalla/distilbart-mnli-12-3)...")
+    classifier = pipeline("zero-shot-classification", model="valhalla/distilbart-mnli-12-3", device=device)
+
+    phishing_mask = df['label'].astype(str).isin(['1', 'phishing', 'spam', 'fraud'])
+    phishing_df = df[phishing_mask].copy()
+    safe_df = df[~phishing_mask].copy()
+    safe_df['intent'] = "Safe / Neutral"
+
     if sample_limit:
         print(f"Downsampling to {sample_limit} examples for demonstration.")
         phishing_df = phishing_df.sample(min(sample_limit, len(phishing_df)), random_state=42)
-        
-    from tqdm import tqdm
-    intent_labels = []
-    
-    print(f"Assigning 'Intent' labels for {len(phishing_df)} items...")
-    for idx, row in tqdm(phishing_df.iterrows(), total=len(phishing_df), desc="Zero-Shot Pipeline"):
-        # Truncate text context slightly to prevent massive memory usage
-        text_context = row['text'][:800] 
-        result = classifier(text_context, candidate_labels=INTENT_LABELS)
-        best_intent = result['labels'][0]
-        intent_labels.append(best_intent)
-        
+        safe_df = safe_df.sample(min(sample_limit, len(safe_df)), random_state=42)
+
+    if len(phishing_df) == 0:
+        raise ValueError("No phishing examples found to label intents.")
+
+    # RESUME LOGIC
+    resume_index = 0
+    if checkpoint_path.exists():
+        resume_index = len(pd.read_csv(checkpoint_path))
+        print(f"\n--- [RESUMING FROM CHECKPOINT] ---")
+        print(f"Already labeled {resume_index} items. Picking up where we left off...")
+
+    texts = [str(row['text'])[:800] for _, row in phishing_df.iterrows()]
+    intent_labels = _run_zero_shot_batch(
+        classifier, texts,
+        resume_index=resume_index,
+        checkpoint_path=checkpoint_path
+    )
+
+    if resume_index > 0:
+        prev_labels = pd.read_csv(checkpoint_path)['intent'].tolist()[:resume_index]
+        intent_labels = prev_labels + intent_labels
+
     phishing_df['intent'] = intent_labels
-    return phishing_df
+    combined_df = pd.concat([safe_df, phishing_df], ignore_index=True)
+    combined_df = combined_df.sample(frac=1, random_state=42).reset_index(drop=True)
+
+    combined_df.to_csv(cache_path, index=False)
+    if checkpoint_path.exists():
+        checkpoint_path.unlink()
+
+    print(f"\nFinal intent distribution:")
+    print(combined_df['intent'].value_counts())
+    return combined_df
 
 def compute_metrics(eval_pred):
     predictions, labels = eval_pred
@@ -255,6 +377,7 @@ def validate_and_infer(model_path, custom_strings):
     print(f"Loading custom model from {model_path}...")
     
     tokenizer = AutoTokenizer.from_pretrained(model_path)
+    tokenizer.model_input_names = ["input_ids", "attention_mask"]
     model = AutoModelForSequenceClassification.from_pretrained(model_path)
     
     # Use HF Pipeline for easy inference
@@ -274,9 +397,9 @@ if __name__ == "__main__":
     # 1. Ingestion and Preprocessing
     df_raw = ingest_and_preprocess_data(DATASET_PATH)
     
-    # 2. Assigning Intents using Zero-Shot (Limiting to 100 for demonstration speed)
-    # Note: Remove sample_limit to process the entire dataset (may take long without GPU).
-    df_intents = label_phishing_intents(df_raw, sample_limit=100)
+    # 2. Assigning Intents using Zero-Shot across the ENTIRE dataset
+    # Note: This processes all ~42k phishing items using your Radeon GPU.
+    df_intents = label_phishing_intents(df_raw, sample_limit=None)
     
     # 3. Model Architecture & Fine-tuning
     train_intent_classifier(df_intents, model_save_path=SAVE_MODEL_DIR)

@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Phishing Intent Classifier</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Terminal/Glitch-tech aesthetic */
+        body {
+            background-color: #0d1117;
+            color: #c9d1d9;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        .monitor-glass {
+            background: rgba(22, 27, 34, 0.8);
+            border: 1px solid #30363d;
+            box-shadow: 0 0 15px rgba(0, 255, 0, 0.05);
+        }
+        .btn-run {
+            background-color: #238636;
+            color: #ffffff;
+            transition: all 0.2s ease-in-out;
+            cursor: pointer;
+        }
+        .btn-run:hover:not(:disabled) {
+            background-color: #2ea043;
+            box-shadow: 0 0 10px rgba(46, 160, 67, 0.4);
+        }
+        .btn-run:disabled {
+            background-color: #1a5c27;
+            color: #8b949e;
+            cursor: not-allowed;
+            border: 1px solid #30363d;
+        }
+        /* Focus ring for terminal feel */
+        textarea:focus {
+            outline: none;
+            border-color: #58a6ff;
+            box-shadow: 0 0 0 1px #58a6ff;
+        }
+        /* Results visual style */
+        .terminal-output {
+            color: #58a6ff;
+        }
+        .btn-clear {
+            background-color: transparent;
+            color: #8b949e;
+            border: 1px solid #30363d;
+            transition: all 0.2s ease-in-out;
+            cursor: pointer;
+        }
+        .btn-clear:hover {
+            background-color: #21262d;
+            color: #c9d1d9;
+            border-color: #8b949e;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4 selection:bg-gray-700 selection:text-white">
+
+    <div class="monitor-glass w-full max-w-3xl p-8 rounded-lg">
+        <div class="mb-8 border-b border-gray-700 pb-4">
+            <h1 class="text-2xl font-bold tracking-widest uppercase text-gray-300">Phishing Intent Classifier</h1>
+            <p class="text-sm text-gray-500 mt-2">Cialdini's Persuasion Principles sequence analysis initialized...</p>
+        </div>
+
+        <div class="mb-6">
+            <label for="text-input" class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wide">Raw Intercepted Payload :</label>
+            <textarea id="text-input" rows="8" class="w-full bg-[#0a0c10] border border-gray-700 text-gray-300 p-4 rounded-md font-mono text-sm resize-y" placeholder="Paste email or message payload here for analysis..."></textarea>
+            <div class="mt-4 flex items-center space-x-4">
+                <span class="text-sm font-medium text-gray-500 uppercase tracking-wide">Or Import File:</span>
+                <input type="file" id="file-input" accept=".txt,.pdf,.docx,.eml" class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-[#1a1f26] file:text-green-500 hover:file:bg-[#232a33] cursor-pointer focus:outline-none"/>
+            </div>
+        </div>
+
+        <div class="flex items-center gap-3">
+            <button id="analyze-btn" class="btn-run px-6 py-2 rounded-md font-bold tracking-wide uppercase text-sm flex items-center justify-center min-w-[150px]">
+                <span id="btn-text">Execute Analysis</span>
+                <span id="btn-loader" class="hidden">Processing...</span>
+            </button>
+            <button id="clear-btn" class="btn-clear px-6 py-2 rounded-md font-bold tracking-wide uppercase text-sm">
+                Clear
+            </button>
+        </div>
+
+        <div id="results-container" class="mt-8 p-6 bg-[#0a0c10] border border-gray-700 rounded-md hidden">
+            <h2 class="text-sm uppercase tracking-widest text-gray-400 mb-4 border-b border-gray-800 pb-2">Analysis Results</h2>
+
+            <!-- Confident verdict row -->
+            <div id="confident-row" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                    <span class="block text-xs uppercase text-gray-500 mb-1">Verdict:</span>
+                    <span id="verdict-output" class="text-lg font-bold"></span>
+                </div>
+                <div>
+                    <span class="block text-xs uppercase text-gray-500 mb-1">Primary Intent:</span>
+                    <span id="intent-output" class="text-lg font-bold terminal-output"></span>
+                </div>
+                <div>
+                    <span class="block text-xs uppercase text-gray-500 mb-1">Confidence:</span>
+                    <span id="confidence-output" class="text-lg font-bold text-gray-300"></span>
+                </div>
+            </div>
+
+            <!-- Uncertain verdict — top 3 intents breakdown -->
+            <div id="uncertain-row" class="hidden">
+                <div class="mb-4">
+                    <span class="block text-xs uppercase text-gray-500 mb-1">Verdict:</span>
+                    <span id="uncertain-verdict-output" class="text-lg font-bold text-yellow-400">Could Be a Scam</span>
+                </div>
+                <span class="block text-xs uppercase text-gray-500 mb-2">Detected Signals:</span>
+                <div id="top-intents-list" class="space-y-2"></div>
+            </div>
+
+            <div id="error-container" class="hidden text-red-500 text-sm mt-4"></div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('clear-btn').addEventListener('click', () => {
+            document.getElementById('text-input').value = '';
+            // Reset file input by replacing it with a clone
+            const fileInput = document.getElementById('file-input');
+            fileInput.value = '';
+            // Hide results
+            document.getElementById('results-container').classList.add('hidden');
+            document.getElementById('error-container').classList.add('hidden');
+            // Return focus to textarea
+            document.getElementById('text-input').focus();
+        });
+
+        document.getElementById('analyze-btn').addEventListener('click', async () => {
+            const rawText = document.getElementById('text-input').value.trim();
+            const fileInput = document.getElementById('file-input');
+            const file = fileInput.files[0];
+            const btnText = document.getElementById('btn-text');
+            const btnLoader = document.getElementById('btn-loader');
+            const analyzeBtn = document.getElementById('analyze-btn');
+            const resultsContainer = document.getElementById('results-container');
+            const verdictOutput = document.getElementById('verdict-output');
+            const intentOutput = document.getElementById('intent-output');
+            const confidenceOutput = document.getElementById('confidence-output');
+            const errorContainer = document.getElementById('error-container');
+
+            if (!rawText && !file) return;
+
+            // Reset UI
+            errorContainer.classList.add('hidden');
+            resultsContainer.classList.add('hidden');
+            analyzeBtn.disabled = true;
+            btnText.classList.add('hidden');
+            btnLoader.classList.remove('hidden');
+
+            try {
+                let fetchOptions = { method: 'POST' };
+                
+                if (file) {
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    if (rawText) formData.append('text', rawText);
+                    fetchOptions.body = formData;
+                } else {
+                    fetchOptions.headers = { 'Content-Type': 'application/json' };
+                    fetchOptions.body = JSON.stringify({ text: rawText });
+                }
+
+                const response = await fetch('/predict', fetchOptions);
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Unknown error occurred during analysis');
+                }
+
+                const confidentRow  = document.getElementById('confident-row');
+                const uncertainRow  = document.getElementById('uncertain-row');
+                const topIntentsList = document.getElementById('top-intents-list');
+
+                // Reset both rows
+                confidentRow.classList.add('hidden');
+                uncertainRow.classList.add('hidden');
+
+                if (data.verdict === 'Could Be a Scam') {
+                    // Uncertain — show amber verdict + top 3 breakdown
+                    uncertainRow.classList.remove('hidden');
+                    topIntentsList.innerHTML = data.top_intents.map(intent => `
+                        <div class="flex items-center justify-between bg-[#161b22] border border-gray-800 rounded px-4 py-2">
+                            <span class="text-sm font-mono text-gray-300">${intent.label}</span>
+                            <span class="text-sm font-bold text-yellow-400">${intent.confidence}%</span>
+                        </div>
+                    `).join('');
+                } else {
+                    // Confident verdict — show standard row
+                    confidentRow.classList.remove('hidden');
+                    verdictOutput.textContent = data.verdict;
+                    verdictOutput.className   = data.is_phishing
+                        ? 'text-lg font-bold text-red-500'
+                        : 'text-lg font-bold text-green-500';
+                    intentOutput.textContent     = data.intent;
+                    confidenceOutput.textContent = `${data.confidence}%`;
+                }
+
+                resultsContainer.classList.remove('hidden');
+                
+            } catch (err) {
+                errorContainer.textContent = `CRITICAL ERROR: ${err.message}`;
+                errorContainer.classList.remove('hidden');
+                resultsContainer.classList.remove('hidden');
+            } finally {
+                analyzeBtn.disabled = false;
+                btnText.classList.remove('hidden');
+                btnLoader.classList.add('hidden');
+            }
+        });
+    </script>
+</body>
+</html>

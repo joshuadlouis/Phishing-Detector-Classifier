@@ -6,6 +6,28 @@ logs/
 # Datasets
 rokibulroni_phishing_dataset/
 
+# Large generated files
+labeled_dataset_cache.csv
+patch_checkpoint.csv
+*.zip
+
+# Colab / training working dirs
+/content/
+
 # Python defaults
 __pycache__/
 *.pyc
+*.pyo
+.Python
+
+# Virtual environments
+dml_env/
+venv/
+.env/
+env/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
